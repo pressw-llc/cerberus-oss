@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Drive-guard PreToolUse hook.
+# (a) Hard dependency on Python 3 (shebang is python3; uses py3-only stdlib behavior).
+# (b) Fail-closed posture: a parseable event whose per-tool protected decision raises
+#     an internal error is DENIED (fail closed) rather than silently allowed. An
+#     unparseable stdin event cannot identify a target, so it is allowed (with a STDERR
+#     warning) to avoid bricking every legitimate tool call.
 import sys, os, json, re, shlex
 
 IS_WIN = os.name == "nt"
@@ -333,7 +339,11 @@ def deny_now(tool, target, reason):
 def main():
     try:
         data = json.loads(sys.stdin.read().lstrip("\ufeff"))
-    except Exception:
+    except Exception as e:
+        # Unparseable stdin cannot identify a protected target; allow rather than brick
+        # every tool call, but warn on STDERR so the failure is not silent.
+        print(f"drive-guard: WARNING \u2014 could not parse hook stdin as JSON ({e}); allowing.",
+              file=sys.stderr)
         sys.exit(0)
     tool = data.get("tool_name", "")
     ti = data.get("tool_input", {}) or {}
@@ -348,14 +358,34 @@ def main():
 
     if m == "block":
         if tool in PATH_TOOLS:
-            target = canon(path_field, cwd) if path_field else canon(cwd, cwd)
-            if matches(target, raws):
-                deny_now(tool, target, f"Locked Google Drive (Shared drives): {tool} on "
-                         f"'{target}' is blocked — no operations permitted on this path.")
+            try:
+                target = canon(path_field, cwd) if path_field else canon(cwd, cwd)
+                hit = matches(target, raws)
+                # Glob carries its location in "pattern"; Grep in "glob". These may
+                # contain wildcards (**), so resolve their static prefix the same way
+                # prep_pattern() does, then test against matches().
+                pat_target = None
+                if not hit and tool == "Glob" and ti.get("pattern"):
+                    pat_target = canon(prep_pattern(ti.get("pattern")), cwd)
+                    hit = matches(pat_target, raws)
+                if not hit and tool == "Grep" and ti.get("glob"):
+                    pat_target = canon(prep_pattern(ti.get("glob")), cwd)
+                    hit = matches(pat_target, raws)
+            except Exception as e:
+                deny_now(tool, path_field, f"Locked Google Drive (Shared drives): "
+                         f"{tool} denied (fail closed on internal error: {e}).")
+            if hit:
+                shown = pat_target or target
+                deny_now(tool, shown, f"Locked Google Drive (Shared drives): {tool} on "
+                         f"'{shown}' is blocked — no operations permitted on this path.")
             audit("allow", tool, target, "")
             sys.exit(0)
         if tool == "Bash":
-            reason = bash_block_reason(ti.get("command", "") or "", cwd, raws)
+            try:
+                reason = bash_block_reason(ti.get("command", "") or "", cwd, raws)
+            except Exception as e:
+                deny_now(tool, ti.get("command", ""), f"Locked Google Drive (Shared drives): "
+                         f"Bash denied (fail closed on internal error: {e}).")
             if reason:
                 deny_now(tool, ti.get("command", ""), f"Locked Google Drive (Shared drives): "
                          f"{reason}. Blocked.")
@@ -364,14 +394,23 @@ def main():
         sys.exit(0)
 
     if tool in WRITE_TOOLS:
-        target = canon(path_field, cwd)
-        if matches(target, raws):
+        try:
+            target = canon(path_field, cwd)
+            hit = matches(target, raws)
+        except Exception as e:
+            deny_now(tool, path_field, f"Read-only Google Drive: {tool} denied "
+                     f"(fail closed on internal error: {e}).")
+        if hit:
             deny_now(tool, target, f"Read-only Google Drive: '{target}' is inside a protected "
                      f"path; {tool} blocked.")
         audit("allow", tool, target, "")
         sys.exit(0)
     if tool == "Bash":
-        reason = bash_write_reason(ti.get("command", "") or "", cwd, raws)
+        try:
+            reason = bash_write_reason(ti.get("command", "") or "", cwd, raws)
+        except Exception as e:
+            deny_now(tool, ti.get("command", ""), f"Read-only Google Drive: Bash denied "
+                     f"(fail closed on internal error: {e}).")
         if reason:
             deny_now(tool, ti.get("command", ""), f"Read-only Google Drive: {reason}. "
                      f"Blocked (OS sandbox also enforces writes).")

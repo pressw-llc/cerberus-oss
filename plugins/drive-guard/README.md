@@ -1,53 +1,37 @@
 # drive-guard
 
-A Claude Code plugin that blocks access to Google **Shared drives** while leaving
-everything else (My Drive, local code, the web) fully usable. It is the plugin
-packaging of [Cerberus](../../README.md).
+Blocks Claude Code from reading, changing, or deleting Google **Shared drives**, while
+leaving My Drive, local code, and the web usable. It shuts both doors to a Shared drive —
+the **filesystem** and the **Google Drive MCP connector** — with one `PreToolUse` hook.
 
-## What it locks
+**See the [root README](../../README.md) for what it does, install, org-wide enforcement,
+configuration env vars, and limits.** This file only covers plugin internals.
 
-- **The filesystem** — Shared drives mount as a normal folder. A `PreToolUse` hook
-  inspects every file action and terminal command and denies anything aimed at a
-  Shared-drive path.
-- **The Google Drive MCP connector** — the same hook denies every
-  `mcp__claude_ai_Google_Drive__*` tool call.
-
-## What's inside
+## Files
 
 ```
 drive-guard/
 ├── .claude-plugin/plugin.json   # manifest
-├── hooks/hooks.json             # PreToolUse hook wiring (matcher + command)
+├── hooks/hooks.json             # single PreToolUse hook entry (matcher + command)
+├── scripts/run-guard.sh         # launcher: picks python3 or python at runtime
 └── scripts/drive-guard.py       # the guard (single-file, stdlib-only Python 3)
 ```
 
-`scripts/drive-guard.py` is a synced copy of the canonical
-`deliverables/claude-code/drive-guard.py`. Run `python3 tools/sync-plugin.py` from
-the repo root after changing the canonical script; `--check` fails on drift.
+## How the hook is wired
 
-## Install (single user)
+`hooks/hooks.json` registers **one** `PreToolUse` entry whose matcher covers the file tools
+(`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `NotebookRead`, `Glob`, `Grep`, `LS`),
+`Bash`, and the `mcp__claude_ai_Google_Drive__*` connector tools. It runs
+`run-guard.sh drive-guard.py --mode block`.
 
-```
-/plugin marketplace add ir272/cerberus
-/plugin install drive-guard@cerberus
-```
+`run-guard.sh` exists because Claude Code spawns exec-form hook commands directly (no shell):
+a single launcher probes for `python3` then `python` at runtime and invokes whichever is
+present, so a missing interpreter name can't spawn-error on every tool call. If no interpreter
+is found it warns on stderr and exits 0 (the launcher fails open; the guard script keeps its
+own fail-closed posture once it runs).
 
-## Deploy org-wide (enforced)
+> POSIX `sh` script: it does not run on native Windows (cmd / PowerShell). Windows seats need
+> a POSIX `sh` (Git Bash / WSL), or the hook must be switched to a PowerShell variant.
 
-A plugin is the *packaging*; enforcement still comes from **managed settings**.
-Push `deliverables/claude-code/packaging/plugin/managed-settings.plugin.json` via
-the Claude.ai admin console (or MDM). It registers the marketplace
-(`extraKnownMarketplaces`) and force-enables the plugin (`enabledPlugins`) so users
-cannot disable it.
-
-## Scope of this layer
-
-This plugin delivers the **hook layer only** (filesystem + MCP connector). The
-`permissions.deny` rules and the macOS Seatbelt `sandbox` backstop cannot live in a
-plugin — they must be added to managed settings separately. See the repo
-[`CLAUDE.md`](../../CLAUDE.md) "Deployment (org-wide)" section.
-
-## Configuration
-
-The guard reads the same environment variables as the standalone script:
-`DRIVE_GUARD_MODE`, `DRIVE_GUARD_PROTECTED`, `DRIVE_GUARD_AUDIT`, `DRIVE_GUARD_SHELL`.
+This is the hook layer. There is no separate canonical copy, sync tool, or test suite in this
+repo — `scripts/drive-guard.py` is the source of truth.

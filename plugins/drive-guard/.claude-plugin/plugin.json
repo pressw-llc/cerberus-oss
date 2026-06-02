@@ -7,9 +7,8 @@
   "author": {
     "name": "PressW"
   },
-  "homepage": "https://github.com/ir272/cerberus",
-  "repository": "https://github.com/ir272/cerberus",
+  "homepage": "https://github.com/ir272/cerberus-oss",
+  "repository": "https://github.com/ir272/cerberus-oss",
   "license": "UNLICENSED",
-  "keywords": ["security", "google-drive", "guard", "hook", "dlp"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["security", "google-drive", "guard", "hook", "dlp"]
 }

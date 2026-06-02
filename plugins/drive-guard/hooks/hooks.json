@@ -6,13 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/drive-guard.py", "--mode", "block"]
-          },
-          {
-            "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/drive-guard.py", "--mode", "block"]
+            "command": "sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-guard.sh", "${CLAUDE_PLUGIN_ROOT}/scripts/drive-guard.py", "--mode", "block"]
           }
         ]
       }

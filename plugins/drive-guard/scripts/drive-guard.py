@@ -609,12 +609,19 @@ def _seg_write_reason(toks, wd, raws):
     if k >= len(toks):
         return None
     cmd, args = os.path.basename(toks[k]), toks[k + 1:]
-    # Operands are non-flag args. Resolving them against the working dir (rather
-    # than only "path-like" tokens) is what catches a bare filename written into a
-    # protected cwd — e.g. `cd <shared> && touch new.txt`. canon()+matches() still
-    # anchor on the protected glob, so a bare operand in a non-protected cwd never
-    # matches → no new false positives.
-    pathargs = [a for a in args if not a.startswith("-")]
+    # Path operands are slash/~/.-bearing tokens (legacy looks_like_path). A bare
+    # data argument that merely equals a protected basename — e.g. a
+    # `git commit -m "Shared drives"` message while cwd is the Drive mount root —
+    # must NOT be treated as a path, or it would falsely deny a legitimate write.
+    # EXCEPTION: when the working dir is itself inside the protected tree, a bare
+    # filename operand really does resolve into protected content (e.g.
+    # `cd <shared> && touch new.txt`), so there we widen to every non-flag operand.
+    # The per-command gating below is unchanged, so reads that happen to run in a
+    # protected cwd — `git log`, `sed 's/a/b/' f` (no -i) — stay allowed.
+    if matches(canon(wd, wd), raws):
+        pathargs = [a for a in args if not a.startswith("-")]
+    else:
+        pathargs = [a for a in args if looks_like_path(a)]
     if cmd in SHELLS:
         for ai, a in enumerate(args):
             if _is_inline_cmd_flag(a) and ai + 1 < len(args):

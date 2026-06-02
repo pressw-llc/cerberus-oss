@@ -1,3 +1,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Local validation harness — not part of the published plugin.
+tests/

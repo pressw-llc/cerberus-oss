@@ -377,7 +377,312 @@ def _find_reason(toks, cwd, raws):
                 return f"find search root is above a protected Shared-drive path: {root}"
     return None
 
+# ── working-directory emulation (cd / pushd / popd traversal) ────────────────
+# The legacy analysis below resolves every relative path token against ONE cwd
+# (the event's cwd). But a command can change directory mid-stream — `cd <mount>
+# && cat "Shared drives/x"` — so a later relative token resolves into the
+# protected tree at runtime even though it does NOT under the event cwd. That was
+# a real bypass. _walk_cwd models the directory left-to-right and yields each
+# simple-command together with the effective cwd in force when it runs, so the
+# token check can resolve against the right base.
+#
+# Design constraints (false positives are the operational danger here):
+#   * This layer is ADDITIVE. It runs before the legacy analysis and only ever
+#     ADDS denials; the legacy event-cwd analysis still runs unchanged afterward.
+#   * It is wrapped in try/except by its callers: ANY error in this hand-rolled
+#     parsing falls back to today's behavior (fail OPEN to legacy), so a parser
+#     bug can never newly over-block a command that works today.
+#   * eff_cwd is trusted (KNOWN) only when a `cd` target fully resolves to a
+#     literal via captured NAME=VALUE assignments + expandvars(os.environ) +
+#     expanduser, with no remaining $(...)/backtick/unset-var/glob. Otherwise it
+#     is UNKNOWN (None) and this layer adds NO denial for that command — the
+#     computed-cd / fully-dynamic case stays in the documented residual that is
+#     backstopped by Google-side Viewer-only, not guessed at here.
+
+_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+def _expand_vars(s, env):
+    # Substitute ${NAME}/$NAME from env; leave unknown names intact so a residual
+    # '$' marks the value as not statically resolvable.
+    def repl(m):
+        name = m.group(1) or m.group(2)
+        return env[name] if name in env else m.group(0)
+    return _VAR_RE.sub(repl, s)
+
+def _is_static_literal(s):
+    return not ("$" in s or "`" in s or any(c in s for c in _GLOB_META))
+
+def _resolve_cd_target(raw, eff, env):
+    # KNOWN -> canon()'d absolute dir; UNKNOWN -> None. `$HOME`/`${HOME}` and ~
+    # resolve to literals (nil FP risk: only matters if they land under the
+    # protected glob); $(...)/backtick/unset-var/glob stay UNKNOWN.
+    if raw is None:
+        return os.path.expanduser("~")            # bare `cd` -> home
+    s = os.path.expanduser(_expand_vars(raw, env))
+    if not _is_static_literal(s):
+        return None
+    if not os.path.isabs(s) and not eff:          # relative target, base unknown
+        return None
+    return canon(s, eff)
+
+def _read_paren(s, i):
+    """From index i (just past '('), return (inner_text, index_past_matching ')'),
+    honoring quotes and nested parens. Tolerant of an unbalanced '(' (takes rest)."""
+    depth, buf, n = 1, "", len(s)
+    sq = dq = False
+    while i < n:
+        c = s[i]
+        if sq:
+            buf += c; sq = c != "'"; i += 1; continue
+        if dq:
+            buf += c; dq = c != '"'; i += 1; continue
+        if c == "'":
+            sq = True; buf += c; i += 1; continue
+        if c == '"':
+            dq = True; buf += c; i += 1; continue
+        if c == "\\" and i + 1 < n:
+            buf += c + s[i + 1]; i += 2; continue
+        if c == "(":
+            depth += 1; buf += c; i += 1; continue
+        if c == ")":
+            depth -= 1
+            if depth == 0:
+                return buf, i + 1
+            buf += c; i += 1; continue
+        buf += c; i += 1
+    return buf, i
+
+def _scan_segments(command):
+    """Split a command into ordered items at the top level, honoring quotes:
+      ('cmd', text)  — a simple-command between connectors (; | & && || newline)
+      ('sub', inner) — a `( ... )` subshell group (its cwd changes don't leak)
+    `$( ... )` is left inside the surrounding token (command substitution is part
+    of a simple command and its cd never affects the parent), so it is NOT split."""
+    items, buf, i, n = [], "", 0, len(command)
+    sq = dq = False
+    def flush():
+        if buf.strip():
+            items.append(("cmd", buf))
+    while i < n:
+        c = command[i]
+        if sq:
+            buf += c; sq = c != "'"; i += 1; continue
+        if dq:
+            buf += c; dq = c != '"'; i += 1; continue
+        if c == "'":
+            sq = True; buf += c; i += 1; continue
+        if c == '"':
+            dq = True; buf += c; i += 1; continue
+        if c == "\\" and i + 1 < n:
+            buf += c + command[i + 1]; i += 2; continue
+        if c == "(" and not buf.endswith("$"):
+            flush(); buf = ""
+            inner, i = _read_paren(command, i + 1)
+            items.append(("sub", inner)); continue
+        if c == "(" and buf.endswith("$"):          # command substitution: keep in token
+            inner, i = _read_paren(command, i + 1)
+            buf += "(" + inner + ")"; continue
+        if c == ")":
+            i += 1; continue                         # stray close paren
+        if c in ";|&\n":
+            flush(); buf = ""; i += 1; continue
+        buf += c; i += 1
+    flush()
+    return items
+
+def _apply_cd(cmd0, args, state):
+    merged = dict(os.environ); merged.update(state["env"])
+    if cmd0 == "popd":
+        if state["stack"]:
+            state["prev"], state["eff"] = state["eff"], state["stack"].pop()
+        return
+    nonflag = [a for a in args if not (a.startswith("-") and a != "-")]
+    if cmd0 == "pushd":
+        state["stack"].append(state["eff"])
+    if len(nonflag) > 1:
+        new = None                                   # ambiguous -> UNKNOWN
+    elif not nonflag:
+        new = _resolve_cd_target(None, state["eff"], merged)   # home
+    elif nonflag[0] == "-":
+        new = state["prev"]                          # `cd -` (may be None)
+    else:
+        new = _resolve_cd_target(nonflag[0], state["eff"], merged)
+    state["prev"], state["eff"] = state["eff"], new
+
+def _walk_items(items, state):
+    for kind, text in items:
+        if kind == "sub":
+            # subshell: its cd/pushd do NOT leak to the parent — recurse on a copy
+            child = {"eff": state["eff"], "prev": state["prev"],
+                     "stack": list(state["stack"]), "env": dict(state["env"])}
+            yield from _walk_items(_scan_segments(text), child)
+            continue
+        try:
+            toks = _split(text)
+        except Exception:
+            toks = text.split()
+        k = 0                                        # capture leading assignments
+        while k < len(toks) and _ASSIGN_RE.match(toks[k]):
+            name, _, val = toks[k].partition("=")
+            merged = dict(os.environ); merged.update(state["env"])
+            v = os.path.expanduser(_expand_vars(val, merged))
+            if _is_static_literal(v):
+                state["env"][name] = v
+            else:
+                state["env"].pop(name, None)
+            k += 1
+        rest = toks[k:]
+        if rest and os.path.basename(rest[0]) in ("cd", "pushd", "popd"):
+            _apply_cd(os.path.basename(rest[0]), rest[1:], state)
+        yield rest, state["eff"]
+
+def _walk_cwd(command, base_cwd):
+    """Yield (tokens, eff_cwd) per simple-command in execution order. eff_cwd is a
+    resolved absolute path, or None (UNKNOWN) when it can't be statically tracked."""
+    base = canon(base_cwd, base_cwd) or base_cwd
+    state = {"eff": base, "prev": None, "stack": [], "env": {}}
+    yield from _walk_items(_scan_segments(command), state)
+
+def _seg_path_tokens(toks):
+    """Path-looking tokens of a single already-split simple-command (the top-level
+    extraction from bash_path_tokens; subshell/-c/eval recursion stays in the
+    legacy bash_path_tokens pass, which still runs against the event cwd)."""
+    out = []
+    for j, t in enumerate(toks):
+        if t in (">", ">>", ">|", "&>", "&>>", "<") and j + 1 < len(toks):
+            out.append(toks[j + 1])
+        elif t.startswith(">") or t.startswith("&>") or t.startswith("<") or (t[:1].isdigit() and ">" in t):
+            out.append(_strip_redirect(t))
+        elif t.startswith("of=") and len(t) > 3:
+            out.append(t[3:])
+        elif looks_like_path(t):
+            out.append(t)
+    return out
+
+# Commands that take their operands as data, not filesystem paths — their args
+# must NOT be resolved against the cwd (else `cd <mount> && echo "Shared drives"`
+# would falsely flag printed text). Everything else is treated as path-consuming.
+_NON_FS_CMDS = {"echo", "printf", ":", "true", "false", "test", "[", "[[",
+                "export", "unset", "alias", "read", "let", "return", "set", "declare"}
+
+def _block_path_tokens(toks):
+    """Path-looking tokens, PLUS bare (no-slash) operands of filesystem commands.
+    The bare-operand pass is what catches a directory name that only becomes
+    protected after a `cd` — e.g. `cd <mount> && ls "Shared drives"` or
+    `find "Shared drives"` — which `looks_like_path` (slash/`~`/`.` heuristic) and
+    `_find_reason` (needs a filter predicate) both miss. canon()+matches() still
+    gate every candidate, so a bare operand in a non-protected cwd never matches."""
+    out = _seg_path_tokens(toks)
+    if not toks:
+        return out
+    k = 0
+    while k < len(toks) and _ASSIGN_RE.match(toks[k]):
+        k += 1
+    if k < len(toks):
+        cmd0 = os.path.basename(toks[k])
+        if cmd0 not in _NON_FS_CMDS and cmd0 not in ("cd", "pushd", "popd"):
+            seen = set(out)
+            for a in toks[k + 1:]:
+                if not a.startswith("-") and a not in seen:
+                    out.append(a)
+    return out
+
+def _cwd_block_reason(command, cwd, raws):
+    for toks, eff in _walk_cwd(command, cwd):
+        if eff is None:                              # UNKNOWN cwd -> add no denial
+            continue
+        if matches(canon(eff, eff), raws):
+            return (f"command runs inside a protected Shared-drive path after a "
+                    f"directory change (cwd: {eff})")
+        fr = _find_reason(toks, eff, raws)
+        if fr:
+            return fr
+        for tok in _block_path_tokens(toks):
+            if matches(canon(tok, eff), raws):
+                return f"command references a protected Shared-drive path: {tok}"
+            if _has_glob_meta(tok):
+                hit = _glob_expand_hits(tok, eff, raws)
+                if hit:
+                    return f"command wildcard expands into a protected Shared-drive path: {hit}"
+    return None
+
+def _seg_write_reason(toks, wd, raws):
+    """Write/delete/mutate detection for one already-split simple-command, resolved
+    against working dir `wd`. Extracted from bash_write_reason so both the cwd-aware
+    walker and the legacy event-cwd loop share identical logic."""
+    if not toks:
+        return None
+    for j, t in enumerate(toks):
+        red = None
+        if t in (">", ">>", ">|", "&>", "&>>"):
+            red = toks[j + 1] if j + 1 < len(toks) else None
+        elif t.startswith(">") or t.startswith("&>"):
+            red = _strip_redirect(t)
+        if red and matches(canon(red, wd), raws):
+            return f"redirection writes into protected path: {red}"
+    k = 0
+    while k < len(toks) and "=" in toks[k] and not looks_like_path(toks[k].split("=")[0]):
+        k += 1
+    if k >= len(toks):
+        return None
+    cmd, args = os.path.basename(toks[k]), toks[k + 1:]
+    # Operands are non-flag args. Resolving them against the working dir (rather
+    # than only "path-like" tokens) is what catches a bare filename written into a
+    # protected cwd — e.g. `cd <shared> && touch new.txt`. canon()+matches() still
+    # anchor on the protected glob, so a bare operand in a non-protected cwd never
+    # matches → no new false positives.
+    pathargs = [a for a in args if not a.startswith("-")]
+    if cmd in SHELLS:
+        for ai, a in enumerate(args):
+            if _is_inline_cmd_flag(a) and ai + 1 < len(args):
+                inner = bash_write_reason(args[ai + 1], wd, raws)
+                if inner:
+                    return inner
+    if cmd == "eval" and args:
+        inner = bash_write_reason(" ".join(args), wd, raws)
+        if inner:
+            return inner
+    if cmd == "tee":
+        for a in pathargs:
+            if matches(canon(a, wd), raws):
+                return f"tee writes into protected path: {a}"
+    if cmd == "dd":
+        for a in args:
+            if a.startswith("of=") and matches(canon(a[3:], wd), raws):
+                return f"dd of= writes into protected path: {a[3:]}"
+    if cmd in WRITER_ANYARG:
+        for a in pathargs:
+            if matches(canon(a, wd), raws):
+                return f"{cmd} modifies/deletes protected path: {a}"
+    if cmd in WRITER_DEST_LAST and pathargs:
+        if matches(canon(pathargs[-1], wd), raws):
+            return f"{cmd} writes to protected destination: {pathargs[-1]}"
+    if cmd in INPLACE_FLAGGED:
+        if any(a == f or a.startswith(f) for a in args for f in INPLACE_FLAGGED[cmd]):
+            for a in pathargs:
+                if matches(canon(a, wd), raws):
+                    return f"{cmd} edits in place inside protected path: {a}"
+    if cmd == "git":
+        mut = {"add", "commit", "checkout", "restore", "reset", "rm", "mv",
+               "clean", "stash", "apply", "merge", "rebase", "pull"}
+        if any(a in mut for a in args[:2]):
+            for a in pathargs:
+                if matches(canon(a, wd), raws):
+                    return f"git mutates protected path: {a}"
+            if matches(canon(wd, wd), raws):
+                return f"git mutates inside protected working tree: {wd}"
+    return None
+
 def bash_block_reason(command, cwd, raws):
+    # cwd-aware traversal layer (additive; fails OPEN to the legacy analysis on any
+    # internal error, so a parser bug can never newly over-block a working command).
+    try:
+        r = _cwd_block_reason(command, cwd, raws)
+        if r:
+            return r
+    except Exception:
+        pass
     if matches(canon(cwd, cwd), raws):
         return f"command runs inside a protected Shared-drive path (cwd: {cwd})"
     for tok in bash_path_tokens(command):
@@ -400,67 +705,26 @@ def bash_block_reason(command, cwd, raws):
     return None
 
 def bash_write_reason(command, cwd, raws):
+    # cwd-aware traversal layer (additive; fails OPEN to the legacy loop on any
+    # internal error). Catches writes/deletes after a `cd` into the protected tree.
+    try:
+        for toks, eff in _walk_cwd(command, cwd):
+            if eff is None:                          # UNKNOWN cwd -> add no denial
+                continue
+            r = _seg_write_reason(toks, eff, raws)
+            if r:
+                return r
+    except Exception:
+        pass
+    # Legacy: per-segment analysis against the event cwd (unchanged behavior).
     for seg in _segments(command):
         seg = seg.strip()
         if not seg:
             continue
         toks = _split(seg)
-        if not toks:
-            continue
-        for j, t in enumerate(toks):
-            red = None
-            if t in (">", ">>", ">|", "&>", "&>>"):
-                red = toks[j + 1] if j + 1 < len(toks) else None
-            elif t.startswith(">") or t.startswith("&>"):
-                red = _strip_redirect(t)
-            if red and looks_like_path(red) and matches(canon(red, cwd), raws):
-                return f"redirection writes into protected path: {red}"
-        k = 0
-        while k < len(toks) and "=" in toks[k] and not looks_like_path(toks[k].split("=")[0]):
-            k += 1
-        if k >= len(toks):
-            continue
-        cmd, args = os.path.basename(toks[k]), toks[k + 1:]
-        pathargs = [a for a in args if looks_like_path(a)]
-        if cmd in SHELLS:
-            for ai, a in enumerate(args):
-                if _is_inline_cmd_flag(a) and ai + 1 < len(args):
-                    inner = bash_write_reason(args[ai + 1], cwd, raws)
-                    if inner:
-                        return inner
-        if cmd == "eval" and args:
-            inner = bash_write_reason(" ".join(args), cwd, raws)
-            if inner:
-                return inner
-        if cmd == "tee":
-            for a in pathargs:
-                if matches(canon(a, cwd), raws):
-                    return f"tee writes into protected path: {a}"
-        if cmd == "dd":
-            for a in args:
-                if a.startswith("of=") and matches(canon(a[3:], cwd), raws):
-                    return f"dd of= writes into protected path: {a[3:]}"
-        if cmd in WRITER_ANYARG:
-            for a in pathargs:
-                if matches(canon(a, cwd), raws):
-                    return f"{cmd} modifies/deletes protected path: {a}"
-        if cmd in WRITER_DEST_LAST and pathargs:
-            if matches(canon(pathargs[-1], cwd), raws):
-                return f"{cmd} writes to protected destination: {pathargs[-1]}"
-        if cmd in INPLACE_FLAGGED:
-            if any(a == f or a.startswith(f) for a in args for f in INPLACE_FLAGGED[cmd]):
-                for a in pathargs:
-                    if matches(canon(a, cwd), raws):
-                        return f"{cmd} edits in place inside protected path: {a}"
-        if cmd == "git":
-            mut = {"add", "commit", "checkout", "restore", "reset", "rm", "mv",
-                   "clean", "stash", "apply", "merge", "rebase", "pull"}
-            if any(a in mut for a in args[:2]):
-                for a in pathargs:
-                    if matches(canon(a, cwd), raws):
-                        return f"git mutates protected path: {a}"
-                if matches(canon(cwd, cwd), raws):
-                    return f"git mutates inside protected working tree: {cwd}"
+        r = _seg_write_reason(toks, cwd, raws)
+        if r:
+            return r
     return None
 
 def emit_deny(reason):

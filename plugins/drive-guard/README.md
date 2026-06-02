@@ -30,6 +30,17 @@ present, so a missing interpreter name can't spawn-error on every tool call. If 
 is found it warns on stderr and exits 0 (the launcher fails open; the guard script keeps its
 own fail-closed posture once it runs).
 
+## Bash directory-change (`cd`) handling
+
+`bash_block_reason`/`bash_write_reason` model `cd`/`pushd`/`popd` left-to-right so a relative
+path resolves against the directory in force when it runs — `cd <mount> && cat "Shared drives/x"`
+is denied, not just an absolute `…/Shared drives/x`. This traversal pass is **additive** and
+**fails open to the legacy event-cwd analysis** on any internal parsing error, so a parser bug
+can never newly over-block a command that worked before. A `cd` target is trusted only when it
+fully resolves to a literal (captured `VAR=value` assignments + `expandvars`/`expanduser`, no
+`$(...)`/backtick/unset-var/glob); a computed `cd` target leaves the cwd UNKNOWN and adds no
+new denial — that stays in the documented dynamic residual backstopped by Google-side Viewer-only.
+
 > POSIX `sh` script: it does not run on native Windows (cmd / PowerShell). Windows seats need
 > a POSIX `sh` (Git Bash / WSL), or the hook must be switched to a PowerShell variant.
 

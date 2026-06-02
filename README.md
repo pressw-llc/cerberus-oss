@@ -135,14 +135,22 @@ Be honest about what a `PreToolUse` hook can and cannot do:
   argv — `-path`/`-ipath`/`-wholename` patterns that name a protected path, and search roots
   at or above a protected directory combined with any filter — and denies those too. So
   shell-glob and `find`-based access are **largely mitigated**, not a wide-open hole.
+- **Directory changes (`cd`/`pushd`) are modeled.** The parser tracks the working directory
+  left-to-right, so a relative path is resolved against the directory in force when it actually
+  runs: `cd <mount> && cat "Shared drives/x"` (and `pushd`, chained/`..`-normalizing cds,
+  symlinked mounts, `cd "$HOME/…"`, and `D=<mount>; cd "$D"`) are denied, not just the absolute
+  `…/Shared drives/x`. This pass is additive and **fails open to the literal-text analysis** on
+  any parse error, so it never over-blocks a command that worked before.
 - **A simple variable still gets caught.** Because the guard also scans the raw command text
   for the protected path, an assignment like `D="<protected path>"; cat "$D/x"` is **denied** —
   the literal path string appears in the command. Naive variable assembly is *not* a bypass.
 - **The true residual is fully dynamic obfuscation.** What the hook genuinely cannot see is a
   protected path that never appears literally and is not a static wildcard — e.g. a path
-  *decoded from base64 at runtime*, or *assembled from the contents of a file*. There the path
-  string simply does not exist in the command text or as a glob the shell can expand ahead of
-  time, so text/glob inspection has nothing to match. This is a fundamental limit of inspecting
+  *decoded from base64 at runtime*, *assembled from the contents of a file*, or reached by
+  `cd`-ing into a directory whose name is *itself computed at runtime* (`cd "$(…)"`), which
+  leaves the working directory unknowable to static analysis. There the path string simply does
+  not exist in the command text or as a glob the shell can expand ahead of time, so text/glob
+  inspection has nothing to match. This is a fundamental limit of inspecting
   command strings, not a bug to be patched away — the backstop for it is **Google-side
   Viewer-only** (below), which is unbypassable regardless of obfuscation.
 - **The hook is the convenience layer, not the security boundary.** It runs inside Claude

@@ -41,6 +41,13 @@ fully resolves to a literal (captured `VAR=value` assignments + `expandvars`/`ex
 `$(...)`/backtick/unset-var/glob); a computed `cd` target leaves the cwd UNKNOWN and adds no
 new denial — that stays in the documented dynamic residual backstopped by Google-side Viewer-only.
 
+Path tokens are classified by the same slash/`~`/`.` heuristic as the legacy analysis: a bare
+*data* argument that merely equals a protected basename (e.g. `grep "Shared drives" notes.txt`
+while the cwd is the Drive mount) is **not** treated as a path, so it is never falsely denied.
+The trade-off is one accepted residual — naming the protected child by a bare word from its
+parent (`cd <mount> && ls "Shared drives"`); the slash forms (`ls "Shared drives/"`,
+`cat "Shared drives/x"`) and any `cd` straight into the tree are still blocked.
+
 > POSIX `sh` script: it does not run on native Windows (cmd / PowerShell). Windows seats need
 > a POSIX `sh` (Git Bash / WSL), or the hook must be switched to a PowerShell variant.
 

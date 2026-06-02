@@ -560,34 +560,6 @@ def _seg_path_tokens(toks):
             out.append(t)
     return out
 
-# Commands that take their operands as data, not filesystem paths — their args
-# must NOT be resolved against the cwd (else `cd <mount> && echo "Shared drives"`
-# would falsely flag printed text). Everything else is treated as path-consuming.
-_NON_FS_CMDS = {"echo", "printf", ":", "true", "false", "test", "[", "[[",
-                "export", "unset", "alias", "read", "let", "return", "set", "declare"}
-
-def _block_path_tokens(toks):
-    """Path-looking tokens, PLUS bare (no-slash) operands of filesystem commands.
-    The bare-operand pass is what catches a directory name that only becomes
-    protected after a `cd` — e.g. `cd <mount> && ls "Shared drives"` or
-    `find "Shared drives"` — which `looks_like_path` (slash/`~`/`.` heuristic) and
-    `_find_reason` (needs a filter predicate) both miss. canon()+matches() still
-    gate every candidate, so a bare operand in a non-protected cwd never matches."""
-    out = _seg_path_tokens(toks)
-    if not toks:
-        return out
-    k = 0
-    while k < len(toks) and _ASSIGN_RE.match(toks[k]):
-        k += 1
-    if k < len(toks):
-        cmd0 = os.path.basename(toks[k])
-        if cmd0 not in _NON_FS_CMDS and cmd0 not in ("cd", "pushd", "popd"):
-            seen = set(out)
-            for a in toks[k + 1:]:
-                if not a.startswith("-") and a not in seen:
-                    out.append(a)
-    return out
-
 def _cwd_block_reason(command, cwd, raws):
     for toks, eff in _walk_cwd(command, cwd):
         if eff is None:                              # UNKNOWN cwd -> add no denial
@@ -598,7 +570,17 @@ def _cwd_block_reason(command, cwd, raws):
         fr = _find_reason(toks, eff, raws)
         if fr:
             return fr
-        for tok in _block_path_tokens(toks):
+        # Only slash/~/.-bearing tokens are treated as paths (the legacy
+        # looks_like_path heuristic). A bare data argument that merely equals a
+        # protected basename — e.g. `grep "Shared drives" notes.txt` while cwd is
+        # the Drive mount — must NOT be resolved as a path, or it would falsely
+        # deny a legitimate read. The "cd straight into the protected tree" case is
+        # already covered by the cwd-is-protected check above; the only thing not
+        # caught here is naming the protected child by a bare word from its parent
+        # (`cd <mount> && ls "Shared drives"`), which is an accepted residual —
+        # the slash forms (`ls "Shared drives/"`, `cat "Shared drives/x"`) ARE
+        # caught.
+        for tok in _seg_path_tokens(toks):
             if matches(canon(tok, eff), raws):
                 return f"command references a protected Shared-drive path: {tok}"
             if _has_glob_meta(tok):

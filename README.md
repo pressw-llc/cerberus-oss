@@ -8,10 +8,20 @@ Shared drives are how teams expose access to documents they should not hand to a
 wholesale. `drive-guard` is the guardrail that keeps an agent out of them without crippling
 the rest of the workflow.
 
+![Cerberus blocks Claude from the Shared drives; everything else — My Drive, local code, the web — stays open](assets/cerberus-hero.png)
+
+## Demo
+
+Cerberus blocking a Shared-drive access in a live Claude Code session:
+
+https://github.com/user-attachments/assets/c9b2d1a1-e2f2-4948-bc1c-da643853aea8
+
 ## What it does
 
 A coding agent can reach a Shared drive through **two doors**, and `drive-guard` shuts both
 with a single `PreToolUse` hook:
+
+![The two doors into a Shared drive — the filesystem and the Google Drive connector — both locked](assets/two-doors.png)
 
 - **The filesystem.** On macOS a Shared drive mounts as an ordinary folder
   (`~/Library/CloudStorage/GoogleDrive-*/Shared drives/...`). The hook inspects every file

@@ -14,7 +14,7 @@ the rest of the workflow.
 
 Cerberus blocking a Shared-drive access in a live Claude Code session:
 
-https://github.com/user-attachments/assets/c9b2d1a1-e2f2-4948-bc1c-da643853aea8
+https://github.com/user-attachments/assets/911c4e0d-d333-43fa-ab47-b968ed19ae45
 
 ## What it does
 

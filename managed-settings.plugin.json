@@ -11,7 +11,38 @@
   "enabledPlugins": {
     "drive-guard@cerberus": true
   },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "denyRead": [
+        "~/Library/CloudStorage/GoogleDrive-*/Shared drives"
+      ],
+      "denyWrite": [
+        "~/Library/CloudStorage/GoogleDrive-*/Shared drives"
+      ]
+    }
+  },
   "permissions": {
-    "disableBypassPermissionsMode": "disable"
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
+      "Write(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
+      "Edit(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
+      "MultiEdit(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
+      "NotebookEdit(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
+      "Read(/g/Shared drives/**)",
+      "Write(/g/Shared drives/**)",
+      "Edit(/g/Shared drives/**)",
+      "MultiEdit(/g/Shared drives/**)",
+      "NotebookEdit(/g/Shared drives/**)",
+      "Read(G:\\Shared drives\\**)",
+      "Write(G:\\Shared drives\\**)",
+      "Edit(G:\\Shared drives\\**)",
+      "MultiEdit(G:\\Shared drives\\**)",
+      "NotebookEdit(G:\\Shared drives\\**)",
+      "mcp__claude_ai_Google_Drive__*"
+    ]
   }
 }

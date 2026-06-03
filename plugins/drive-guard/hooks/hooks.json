@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|Glob|Grep|LS|Bash|mcp__claude_ai_Google_Drive__.*",
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|Glob|Grep|LS|Bash|PowerShell|mcp__claude_ai_Google_Drive__.*",
         "hooks": [
           {
             "type": "command",

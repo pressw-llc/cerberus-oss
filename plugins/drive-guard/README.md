@@ -21,7 +21,7 @@ drive-guard/
 
 `hooks/hooks.json` registers **one** `PreToolUse` entry whose matcher covers the file tools
 (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `NotebookRead`, `Glob`, `Grep`, `LS`),
-`Bash`, and the `mcp__claude_ai_Google_Drive__*` connector tools. It runs
+`Bash`, `PowerShell`, and the `mcp__claude_ai_Google_Drive__*` connector tools. It runs
 `run-guard.sh drive-guard.py --mode block`.
 
 `run-guard.sh` exists because Claude Code spawns exec-form hook commands directly (no shell):
@@ -49,7 +49,11 @@ parent (`cd <mount> && ls "Shared drives"`); the slash forms (`ls "Shared drives
 `cat "Shared drives/x"`) and any `cd` straight into the tree are still blocked.
 
 > POSIX `sh` script: it does not run on native Windows (cmd / PowerShell). Windows seats need
-> a POSIX `sh` (Git Bash / WSL), or the hook must be switched to a PowerShell variant.
+> a POSIX `sh` (Git Bash / WSL) for the hook to fire. Without `sh`, the hook is absent but
+> `permissions.deny` in the managed settings still blocks all file tools on Shared-drive paths
+> (including the native `G:\Shared drives` form). See the
+> [root README's Windows section](../../README.md#windows-and-the-hook) for the full
+> architecture.
 
 This is the hook layer. There is no separate canonical copy, sync tool, or test suite in this
 repo — `scripts/drive-guard.py` is the source of truth.

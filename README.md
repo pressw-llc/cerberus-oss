@@ -16,7 +16,7 @@ with a single `PreToolUse` hook:
 - **The filesystem.** On macOS a Shared drive mounts as an ordinary folder
   (`~/Library/CloudStorage/GoogleDrive-*/Shared drives/...`). The hook inspects every file
   tool — `Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `NotebookRead`, `Glob`,
-  `Grep`, `LS` — and every `Bash` command, and denies anything that targets a protected
+  `Grep`, `LS` — and every `Bash`/`PowerShell` command, and denies anything that targets a protected
   path. For `Bash` it parses redirections, `tee`/`dd`, in-place editors (`sed -i`, `perl -i`),
   `cp`/`mv`/`rsync`, `git` mutations, subshells (`$(...)`, backticks), and `eval`/`-c`
   wrappers, not just the bare command name.
@@ -65,6 +65,16 @@ What that policy does:
   `/plugin marketplace add`.
 - **`enabledPlugins`** force-enables `drive-guard@cerberus` — the hook runs on every seat and
   users can't disable it (force-enabled plugin hooks need no per-user approval).
+- **`sandbox`** enables the Claude Code sandbox with filesystem-level `denyRead` and `denyWrite`
+  on the Shared-drive mount path. `autoAllowBashIfSandboxed` lets Bash run without extra
+  prompts when the sandbox is active; `failIfUnavailable` is `false` so Claude Code still works
+  on platforms where the sandbox binary isn't present (the other layers still protect).
+- **`permissions.deny`** hard-blocks every file tool (`Read`, `Write`, `Edit`, `MultiEdit`,
+  `NotebookEdit`) on Shared-drive paths — the macOS mount
+  (`~/Library/CloudStorage/GoogleDrive-*/Shared drives/**`), the Git-Bash/MSYS form
+  (`/g/Shared drives/**`), and the native Windows form (`G:\Shared drives\**`) — plus every
+  `mcp__claude_ai_Google_Drive__*` call. These deny rules are enforced by Claude Code itself
+  (no Python needed) and outrank any user or project settings.
 - **`permissions.disableBypassPermissionsMode: "disable"`** blocks the mode that would let a
   user skip permission prompts.
 
@@ -85,10 +95,11 @@ Steps:
 > `marketplace.json`) while the repo is `cerberus-oss`. That's why the policy reads
 > `drive-guard@cerberus` with source repo `ir272/cerberus-oss`.
 
-> **Harden for real records (recommended).** The hook is best-effort and **fails open if no
-> Python is on `PATH`** (see [Limits](#limits)). For fail-closed enforcement that needs no
-> interpreter, add the `permissions.deny` block from [Limits](#limits) to the same policy, and
-> set the Shared drive to **Google-side Viewer-only**.
+> **Hardened out of the box.** The shipped policy already includes `sandbox` filesystem
+> restrictions and `permissions.deny` rules — both enforced by Claude Code itself with no Python
+> required (see [Limits](#limits)). The hook adds deeper `Bash` command analysis on top. For
+> true write-integrity against any bypass, also set the Shared drive to **Google-side
+> Viewer-only** (see [Backstop](#backstop-google-side-viewer-only)).
 
 ## Verify it works
 
@@ -158,32 +169,52 @@ Be honest about what a `PreToolUse` hook can and cannot do:
 
 ### Operator warning: the hook is best-effort and fails open
 
-The launcher (`run-guard.sh`) probes for a Python interpreter at runtime. If **no `python3` or
-`python` is on `PATH`**, it warns on stderr and **exits 0 — allowing the call** (fail-open on
-the launcher, so a missing interpreter never bricks every tool call). The guard's own
-fail-closed posture only applies *once the script actually runs*. Treat the plugin as
-best-effort.
+The launcher (`run-guard.sh`) is a POSIX `sh` script. It probes for a Python interpreter at
+runtime. If **no `python3` or `python` is on `PATH`**, it warns on stderr and **exits 0 —
+allowing the call** (fail-open on the launcher, so a missing interpreter never bricks every
+tool call). The guard's own fail-closed posture only applies *once the script actually runs*.
+Treat the plugin as best-effort.
 
-For guaranteed, **fail-closed** enforcement that needs no Python, pair the plugin with two
-controls that don't depend on the hook running:
+#### Windows and the hook
 
-1. **Claude Code managed-settings `permissions.deny`** on the Shared-drive globs. These are
-   enforced by Claude Code itself (no interpreter required) and outrank user/project settings.
-   Sketch:
+The launcher requires a POSIX `sh` — it runs natively on macOS/Linux but **not on native
+Windows** (cmd / PowerShell). Windows seats need one of:
 
-   ```json
-   {
-     "permissions": {
-       "deny": [
-         "Read(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
-         "Write(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)",
-         "Edit(~/Library/CloudStorage/GoogleDrive-*/Shared drives/**)"
-       ]
-     }
-   }
-   ```
+- **Git Bash** on `PATH` (provides `sh.exe`) — the hook works as-is.
+- **WSL** — same story; `sh` is available inside the WSL environment.
+- **Neither** — the `sh` command is not found and the hook does not run. The
+  `permissions.deny` and `sandbox` layers in the managed policy still protect (see below),
+  but the deep shell-command analysis is absent. Use your MDM to push Git Bash or Python
+  onto every Windows seat to close this gap.
 
-2. **Google-side Viewer-only** on the Shared drive — the unbypassable backstop for the dynamic
+The hook matcher includes `PowerShell` alongside `Bash`, so on Windows seats that have
+`sh` + Python available, `PowerShell` tool calls are inspected by the guard. The guard's
+command parser already handles `cmd /c`, `powershell -Command`, and `-EncodedCommand` flag
+detection (the encoded payload itself is not decoded — same dynamic-residual class as
+base64-decoded paths on POSIX).
+
+#### Controls that don't depend on the hook
+
+The shipped [`managed-settings.plugin.json`](managed-settings.plugin.json) includes two
+controls enforced by Claude Code itself — no interpreter or `sh` needed:
+
+1. **`sandbox.filesystem.denyRead` / `denyWrite`** on the Shared-drive mount path (macOS
+   only — the Claude Code sandbox binary is not available on Windows).
+2. **`permissions.deny`** rules for every file tool (`Read`, `Write`, `Edit`, `MultiEdit`,
+   `NotebookEdit`) on the macOS, Git-Bash/MSYS, and native Windows (`G:\Shared drives`)
+   Shared-drive paths, plus all `mcp__claude_ai_Google_Drive__*` calls. These outrank
+   user/project settings and work on **every platform**.
+
+| Layer | macOS / Linux | Windows (Git Bash) | Windows (native) |
+| --- | --- | --- | --- |
+| `permissions.deny` | all file tools blocked | all file tools blocked | all file tools blocked |
+| `sandbox.filesystem` | reads + writes blocked | N/A | N/A |
+| Hook (shell analysis) | deep command parsing | deep command parsing | not available (`sh` missing) |
+| Backstop | Google-side Viewer-only | Google-side Viewer-only | Google-side Viewer-only |
+
+For true write-integrity against any bypass, pair these with:
+
+3. **Google-side Viewer-only** on the Shared drive — the unbypassable backstop for the dynamic
    residual above (see next section).
 
 ### Backstop: Google-side Viewer-only

@@ -10,7 +10,7 @@
       "name": "drive-guard",
       "source": "./plugins/drive-guard",
       "description": "Blocks Claude Code from reading, changing, or deleting Google Shared drives (filesystem + Google Drive MCP connector).",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "category": "security",
       "tags": ["security", "google-drive", "dlp"],
       "author": {

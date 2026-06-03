@@ -11,9 +11,9 @@
 # the guard script keeps its own fail-closed posture once it actually runs).
 #
 # Platform note: this is a POSIX sh script and does NOT run on native Windows (cmd /
-# PowerShell). This deployment is macOS-centric (Google Drive "CloudStorage" mounts).
-# Windows seats must provide a POSIX sh (Git Bash / WSL) OR the hook must be switched to
-# a "shell":"powershell" variant. See open_concerns.
+# PowerShell). Windows seats must provide a POSIX sh (Git Bash / WSL) for the hook to
+# fire. Without sh, the managed-settings permissions.deny layer still blocks all file
+# tools on Shared-drive paths. See the root README's "Windows and the hook" section.
 
 # PATH-hijack hardening (ISSUE #1): hook commands inherit the caller's PATH, so a
 # user-writable dir earlier on PATH could shadow "python3"/"python" with a fake interpreter

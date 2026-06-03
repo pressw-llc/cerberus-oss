@@ -42,7 +42,7 @@ Try it on one machine:
 1. In Claude Code, add this repo as a marketplace and install the plugin:
 
    ```
-   /plugin marketplace add ir272/cerberus-oss
+   /plugin marketplace add pressw-llc/cerberus-oss
    /plugin install drive-guard@cerberus
    ```
 
@@ -60,7 +60,7 @@ or your MDM. This repo ships the exact policy: **[`managed-settings.plugin.json`
 
 What that policy does:
 
-- **`extraKnownMarketplaces`** registers this repo (`ir272/cerberus-oss`) as a trusted
+- **`extraKnownMarketplaces`** registers this repo (`pressw-llc/cerberus-oss`) as a trusted
   marketplace named `cerberus`, so every seat can resolve the plugin without anyone running
   `/plugin marketplace add`.
 - **`enabledPlugins`** force-enables `drive-guard@cerberus` — the hook runs on every seat and
@@ -93,7 +93,7 @@ Steps:
 
 > **Names look mismatched on purpose.** The marketplace is named `cerberus` (declared in
 > `marketplace.json`) while the repo is `cerberus-oss`. That's why the policy reads
-> `drive-guard@cerberus` with source repo `ir272/cerberus-oss`.
+> `drive-guard@cerberus` with source repo `pressw-llc/cerberus-oss`.
 
 > **Hardened out of the box.** The shipped policy already includes `sandbox` filesystem
 > restrictions and `permissions.deny` rules — both enforced by Claude Code itself with no Python

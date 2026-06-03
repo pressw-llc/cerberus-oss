@@ -4,7 +4,7 @@
     "cerberus": {
       "source": {
         "source": "github",
-        "repo": "ir272/cerberus-oss"
+        "repo": "pressw-llc/cerberus-oss"
       }
     }
   },
